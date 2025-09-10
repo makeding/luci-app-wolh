@@ -1,0 +1,13 @@
+{
+	"admin/services/wolh": {
+		"title": "Wake on LAN H",
+		"order": 90,
+		"action": {
+			"type": "view",
+			"path": "wolh"
+		},
+		"depends": {
+			"acl": [ "luci-app-wolh" ]
+		}
+	}
+}
