@@ -108,7 +108,14 @@ return view.extend({
 			});
 			
 			pinnedHostsContainer = E('div', { 'class': 'pinned-hosts-container' }, [
-				E('h3', {}, [_('Pinned Hosts')]),
+				E('div', { 'class': 'pinned-hosts-header' }, [
+					E('h3', {}, [_('Pinned Hosts')]),
+					E('button', {
+						'class': 'cbi-button cbi-button-neutral',
+						'title': _('Edit pinned hosts'),
+						'click': L.ui.createHandlerFn(this, 'handleEditPinnedHosts')
+					}, [_('Edit')])
+				]),
 				E('div', { 'class': 'pinned-grid' }, 
 					pinnedList.map(function(host) {
 						return E('div', {
@@ -277,7 +284,8 @@ return view.extend({
 			document.head.appendChild(E('style', {}, [
 				// Pinned hosts styles
 				'.pinned-hosts-container { margin-bottom: 20px; }',
-				'.pinned-hosts-container h3 { margin-bottom: 15px; font-size: 16px; font-weight: bold; color: #2196F3; }',
+				'.pinned-hosts-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px; }',
+				'.pinned-hosts-container h3 { margin: 0; font-size: 16px; font-weight: bold; color: #2196F3; }',
 				'.pinned-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 15px; }',
 				'.pinned-card { border: 1px solid #2196F3; border-radius: 8px; padding: 15px; position: relative; transition: all 0.3s ease; cursor: pointer; background: #E3F2FD; }',
 				'.pinned-card:hover { box-shadow: 0 4px 12px rgba(33,150,243,0.3); background: #BBDEFB; transform: translateY(-2px); }',
@@ -520,6 +528,233 @@ return view.extend({
 				]);
 			}
 		});
+	},
+
+	handleEditPinnedHosts: function() {
+		var pinnedHosts = [];
+		
+		// Load current pinned hosts
+		uci.sections('wolh', 'host', function(section) {
+			if (section.mac && section.name) {
+				pinnedHosts.push({
+					id: section['.name'],
+					name: section.name,
+					mac: section.mac,
+					ip: section.ip || ''
+				});
+			}
+		});
+		
+		// Sort by name
+		pinnedHosts.sort(function(a, b) {
+			return a.name.localeCompare(b.name);
+		});
+		
+		var modalContent = this.buildEditModal(pinnedHosts);
+		
+		ui.showModal(_('Edit Pinned Hosts'), [
+			modalContent,
+			E('div', { 'class': 'right modal-actions' }, [
+				E('button', {
+					'class': 'cbi-button cbi-button-neutral',
+					'click': ui.hideModal
+				}, [_('Cancel')]),
+				E('button', {
+					'class': 'cbi-button cbi-button-positive',
+					'click': L.ui.createHandlerFn(this, 'saveEditedHosts')
+				}, [_('Save')])
+			])
+		]);
+	},
+
+	buildEditModal: function(pinnedHosts) {
+		var container = E('div', { 'class': 'edit-hosts-container' });
+		
+		var table = E('table', { 'class': 'table cbi-section-table hosts-edit-table' }, [
+			E('thead', {}, [
+				E('tr', {}, [
+					E('th', { 'style': 'width: 30%' }, [_('Name')]),
+					E('th', { 'style': 'width: 35%' }, [_('MAC Address')]),
+					E('th', { 'style': 'width: 25%' }, [_('IP Address')]),
+					E('th', { 'style': 'width: 10%' }, [_('Action')])
+				])
+			]),
+			E('tbody', { 'class': 'hosts-tbody' })
+		]);
+		
+		var tbody = table.querySelector('.hosts-tbody');
+		
+		// Add existing hosts
+		pinnedHosts.forEach(function(host, index) {
+			tbody.appendChild(this.createHostEditRow(host, index));
+		}.bind(this));
+		
+		// Add new host button
+		var addButton = E('button', {
+			'class': 'cbi-button cbi-button-add',
+			'style': 'margin-top: 10px;',
+			'click': function() {
+				var newIndex = tbody.querySelectorAll('tr').length;
+				var newHost = { id: '', name: '', mac: '', ip: '' };
+				tbody.appendChild(this.createHostEditRow(newHost, newIndex));
+			}.bind(this)
+		}, [_('Add Host')]);
+		
+		container.appendChild(table);
+		container.appendChild(addButton);
+		
+		return container;
+	},
+
+	createHostEditRow: function(host, index) {
+		var row = E('tr', { 'class': 'cbi-section-table-row host-edit-row', 'data-index': index }, [
+			E('td', {}, [
+				E('input', {
+					'type': 'text',
+					'class': 'cbi-input-text host-name-input',
+					'placeholder': _('Host name'),
+					'value': host.name,
+					'data-field': 'name'
+				})
+			]),
+			E('td', {}, [
+				E('input', {
+					'type': 'text',
+					'class': 'cbi-input-text host-mac-input',
+					'placeholder': 'XX:XX:XX:XX:XX:XX',
+					'value': host.mac,
+					'data-field': 'mac',
+					'pattern': '^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$'
+				})
+			]),
+			E('td', {}, [
+				E('input', {
+					'type': 'text',
+					'class': 'cbi-input-text host-ip-input',
+					'placeholder': '192.168.1.100',
+					'value': host.ip,
+					'data-field': 'ip'
+				})
+			]),
+			E('td', {}, [
+				E('button', {
+					'class': 'cbi-button cbi-button-negative',
+					'click': function() {
+						row.remove();
+					}
+				}, [_('Delete')])
+			])
+		]);
+		
+		// Store original ID for updates
+		row.setAttribute('data-original-id', host.id);
+		
+		return row;
+	},
+
+	saveEditedHosts: function() {
+		var rows = document.querySelectorAll('.host-edit-row');
+		var hosts = [];
+		var errors = [];
+		
+		// Validate and collect data
+		rows.forEach(function(row, index) {
+			var nameInput = row.querySelector('.host-name-input');
+			var macInput = row.querySelector('.host-mac-input');
+			var ipInput = row.querySelector('.host-ip-input');
+			
+			var name = nameInput.value.trim();
+			var mac = macInput.value.trim().toUpperCase();
+			var ip = ipInput.value.trim();
+			var originalId = row.getAttribute('data-original-id');
+			
+			// Validate required fields
+			if (!name) {
+				errors.push(_('Host name is required for entry %d').format(index + 1));
+				nameInput.style.borderColor = '#ff0000';
+			} else {
+				nameInput.style.borderColor = '';
+			}
+			
+			if (!mac) {
+				errors.push(_('MAC address is required for entry %d').format(index + 1));
+				macInput.style.borderColor = '#ff0000';
+			} else if (!/^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$/.test(mac)) {
+				errors.push(_('Invalid MAC address format for entry %d').format(index + 1));
+				macInput.style.borderColor = '#ff0000';
+			} else {
+				macInput.style.borderColor = '';
+			}
+			
+			if (name && mac && /^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$/.test(mac)) {
+				hosts.push({
+					originalId: originalId,
+					name: name,
+					mac: mac,
+					ip: ip
+				});
+			}
+		});
+		
+		if (errors.length > 0) {
+			ui.addNotification(null, [
+				E('p', [_('Please fix the following errors:')]),
+				E('ul', {}, errors.map(function(error) {
+					return E('li', {}, [error]);
+				}))
+			]);
+			return;
+		}
+		
+		// Show loading modal
+		ui.showModal(_('Saving Changes'), [
+			E('p', { 'class': 'spinning' }, [_('Updating pinned hosts configuration…')])
+		]);
+		
+		// Remove all existing wolh host sections
+		var sectionsToRemove = [];
+		uci.sections('wolh', 'host', function(section) {
+			sectionsToRemove.push(section['.name']);
+		});
+		
+		sectionsToRemove.forEach(function(sectionName) {
+			uci.remove('wolh', sectionName);
+		});
+		
+		// Add new sections
+		hosts.forEach(function(host) {
+			var sectionId = uci.add('wolh', 'host');
+			uci.set('wolh', sectionId, 'name', host.name);
+			uci.set('wolh', sectionId, 'mac', host.mac);
+			if (host.ip) {
+				uci.set('wolh', sectionId, 'ip', host.ip);
+			}
+		});
+		
+		// Save and apply changes
+		uci.save()
+			.then(() => uci.apply())
+			.then(() => {
+				var checkChanges = function() {
+					return uci.changes().then((changes) => {
+						var configNames = Object.keys(changes);
+						if (configNames.length === 0) {
+							location.reload();
+						} else {
+							setTimeout(checkChanges, 400);
+						}
+					}).catch(() => {
+						setTimeout(() => location.reload(), 2000);
+					});
+				};
+				setTimeout(checkChanges, 1000);
+			})
+			.catch((err) => {
+				ui.hideModal();
+				ui.addNotification(null, [
+					E('p', [_('Failed to save pinned hosts: %s').format(err)])
+				]);
+			});
 	},
 
 	addFooter: function() {

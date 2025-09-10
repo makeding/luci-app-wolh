@@ -10,7 +10,7 @@ PKG_NAME:=luci-app-wolh
 LUCI_TITLE:=LuCI Support for Wake-on-LAN
 LUCI_DEPENDS:=+luci-base +etherwake
 
-PKG_VERSION:=0.1
+PKG_VERSION:=0.2
 PKG_RELEASE:=1
 
 LUCI_PKGARCH:=all
