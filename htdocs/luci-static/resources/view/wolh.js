@@ -23,7 +23,8 @@ return view.extend({
 			L.resolveDefault(fs.stat('/usr/bin/wol')),
 			this.callHostHints(),
 			uci.load('etherwake'),
-			uci.load('dhcp')
+			uci.load('dhcp'),
+			uci.load('wolh')
 		]);
 	},
 
@@ -35,6 +36,17 @@ return view.extend({
 
 		this.formdata.has_ewk = has_ewk;
 		this.formdata.has_wol = has_wol;
+
+		// Parse pinned hosts from wolh configuration
+		var pinnedHosts = {};
+		uci.sections('wolh', 'host', function(section) {
+			if (section.mac && section.name) {
+				pinnedHosts[section.mac] = {
+					name: section.name,
+					ip: section.ip || null
+				};
+			}
+		});
 
 		// Parse static leases from DHCP configuration
 		var staticLeases = [];
@@ -79,6 +91,139 @@ return view.extend({
 			]);
 		}
 
+		// Create pinned hosts cards container
+		var pinnedHostsContainer = null;
+		if (Object.keys(pinnedHosts).length > 0) {
+			var pinnedList = Object.keys(pinnedHosts).map(function(mac) {
+				return {
+					mac: mac,
+					name: pinnedHosts[mac].name,
+					ip: pinnedHosts[mac].ip
+				};
+			});
+			
+			// Sort pinned hosts by name
+			pinnedList.sort(function(a, b) {
+				return a.name.localeCompare(b.name);
+			});
+			
+			pinnedHostsContainer = E('div', { 'class': 'pinned-hosts-container' }, [
+				E('h3', {}, [_('Pinned Hosts')]),
+				E('div', { 'class': 'pinned-grid' }, 
+					pinnedList.map(function(host) {
+						return E('div', {
+							'class': 'pinned-card',
+							'data-mac': host.mac,
+							'click': L.ui.createHandlerFn(this, function(mac, name, ev) {
+								// Don't trigger wakeup if clicking on unpin button
+								if (ev.target.classList.contains('unpin-btn')) return false;
+								this.handleWakeup(mac, name, ev);
+								return false;
+							}, host.mac, host.name)
+						}, [
+							E('div', { 'class': 'host-info' }, [
+								E('div', { 'class': 'host-name' }, [host.name]),
+								host.ip ? E('div', { 'class': 'host-ip' }, [host.ip]) : null,
+								E('div', { 'class': 'host-mac' }, [host.mac])
+							].filter(function(el) { return el !== null; })),
+							E('div', { 'class': 'wol-icon' }, ['▶']),
+							E('div', {
+								'class': 'unpin-btn',
+								'title': _('Unpin this host'),
+								'click': L.ui.createHandlerFn(this, function(mac, name, ip, ev) {
+									ev.preventDefault();
+									ev.stopPropagation();
+									this.handleTogglePin(mac, name, ip, true);
+									return false;
+								}, host.mac, host.name, host.ip)
+							}, ['📌'])
+						]);
+					}.bind(this))
+				)
+			]);
+		}
+
+		// Create host hints cards container
+		var hostHintsContainer = null;
+		var hostList = [];
+		
+		// Process host hints data
+		L.sortedKeys(hosts).forEach(function(mac) {
+			var host = hosts[mac];
+			if (mac && host) {
+				hostList.push({
+					mac: mac,
+					name: host.name || null,
+					ip: (L.toArray(host.ipaddrs || host.ipv4)[0] || 
+						 L.toArray(host.ip6addrs || host.ipv6)[0] || null)
+				});
+			}
+		});
+		
+		// Sort by IP address
+		hostList.sort(function(a, b) {
+			var ipA = a.ip || '';
+			var ipB = b.ip || '';
+			
+			// Handle IPv4 addresses for proper sorting
+			if (ipA && ipB) {
+				var partsA = ipA.split('.').map(function(n) { return parseInt(n, 10); });
+				var partsB = ipB.split('.').map(function(n) { return parseInt(n, 10); });
+				
+				if (partsA.length === 4 && partsB.length === 4) {
+					for (var i = 0; i < 4; i++) {
+						if (partsA[i] !== partsB[i]) {
+							return partsA[i] - partsB[i];
+						}
+					}
+					return 0;
+				}
+			}
+			
+			// Fallback to string comparison
+			return ipA.localeCompare(ipB);
+		});
+
+		if (hostList.length > 0) {
+			hostHintsContainer = E('div', { 'class': 'host-hints-container' }, [
+				E('h3', {}, [_('Discovered Hosts')]),
+				E('div', { 'class': 'hosts-grid' }, 
+					hostList.map(function(host) {
+						var isPinned = pinnedHosts.hasOwnProperty(host.mac);
+						return E('div', {
+							'class': 'host-card',
+							'data-mac': host.mac,
+							'click': L.ui.createHandlerFn(this, function(mac, name, ev) {
+								// Don't trigger wakeup if clicking on pin button
+								if (ev.target.classList.contains('pin-btn')) return false;
+								this.handleWakeup(mac, name, ev);
+								return false;
+							}, host.mac, host.name)
+						}, [
+							E('div', { 'class': 'host-info' }, [
+								E('div', { 'class': 'host-name' }, [
+									host.name || (host.ip || _('Unknown Host'))
+								]),
+								host.ip ? E('div', { 'class': 'host-ip' }, [host.ip]) : null,
+								E('div', { 'class': 'host-mac' }, [host.mac])
+							].filter(function(el) { return el !== null; })),
+							E('div', { 'class': 'wol-icon' }, ['▶']),
+							!isPinned ? E('div', {
+								'class': 'pin-btn',
+								'title': _('Pin this host'),
+								'click': L.ui.createHandlerFn(this, function(mac, name, ip, ev) {
+									ev.preventDefault();
+									ev.stopPropagation();
+									this.handleTogglePin(mac, name, ip, false);
+									return false;
+								}, host.mac, host.name || (host.ip || _('Unknown Host')), host.ip)
+							}, ['📌']) : null
+						].filter(function(el) { return el !== null; }));
+					}.bind(this))
+				)
+			]);
+		}
+
 		m = new form.JSONMap(this.formdata, _('Wake on LAN H'),
 			_('Wake on LAN is a mechanism to boot computers remotely in the local network.'));
 
@@ -113,19 +258,12 @@ return view.extend({
 				o.depends('executable', '/usr/bin/etherwake');
 		}
 
-		o = s.option(form.Value, 'mac', _('Host to wake up'),
-			_('Choose the host to wake up or enter a custom MAC address to use'));
+		// Keep MAC input field for manual entry, but hide the dropdown options since we have cards
+		o = s.option(form.Value, 'mac', _('Manual MAC Address'),
+			_('Enter a custom MAC address to wake up (optional - you can also click on cards above)'));
 
-		o.rmempty = false;
-
-		L.sortedKeys(hosts).forEach(function(mac) {
-			o.value(mac, E([], [ mac, ' (', E('strong', [
-				hosts[mac].name ||
-				L.toArray(hosts[mac].ipaddrs || hosts[mac].ipv4)[0] ||
-				L.toArray(hosts[mac].ip6addrs || hosts[mac].ipv6)[0] ||
-				'?'
-			]), ')' ]));
-		});
+		o.rmempty = true;
+		o.placeholder = _('XX:XX:XX:XX:XX:XX');
 
 		if (has_ewk) {
 			o = s.option(form.Flag, 'broadcast', _('Send to broadcast address'));
@@ -134,26 +272,88 @@ return view.extend({
 				o.depends('executable', '/usr/bin/etherwake');
 		}
 
-		// Add CSS styles if we have static leases
-		if (staticLeases.length > 0) {
+		// Add CSS styles if we have any containers
+		if (staticLeases.length > 0 || hostList.length > 0 || Object.keys(pinnedHosts).length > 0) {
 			document.head.appendChild(E('style', {}, [
+				// Pinned hosts styles
+				'.pinned-hosts-container { margin-bottom: 20px; }',
+				'.pinned-hosts-container h3 { margin-bottom: 15px; font-size: 16px; font-weight: bold; color: #2196F3; }',
+				'.pinned-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 15px; }',
+				'.pinned-card { border: 1px solid #2196F3; border-radius: 8px; padding: 15px; position: relative; transition: all 0.3s ease; cursor: pointer; background: #E3F2FD; }',
+				'.pinned-card:hover { box-shadow: 0 4px 12px rgba(33,150,243,0.3); background: #BBDEFB; transform: translateY(-2px); }',
+				
+				// Static leases styles
 				'.static-leases-container { margin-bottom: 20px; }',
 				'.static-leases-container h3 { margin-bottom: 15px; font-size: 16px; font-weight: bold; }',
 				'.leases-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 15px; }',
 				'.lease-card { border: 1px solid #ddd; border-radius: 8px; padding: 15px; position: relative; transition: all 0.3s ease; cursor: pointer; background: #fff; }',
 				'.lease-card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.15); background: #f9f9f9; transform: translateY(-2px); }',
-				'.lease-info { margin-right: 40px; }',
+				'.lease-info { margin-right: 80px; }',
 				'.lease-name { font-weight: bold; font-size: 16px; color: #333; margin-bottom: 5px; }',
 				'.lease-ip { color: #666; font-size: 14px; margin-bottom: 3px; }',
 				'.lease-mac { color: #888; font-size: 12px; font-family: monospace; }',
+				
+				// Host hints styles
+				'.host-hints-container { margin-bottom: 20px; }',
+				'.host-hints-container h3 { margin-bottom: 15px; font-size: 16px; font-weight: bold; }',
+				'.hosts-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 15px; }',
+				'.host-card { border: 1px solid #e0e0e0; border-radius: 8px; padding: 15px; position: relative; transition: all 0.3s ease; cursor: pointer; background: #fafafa; }',
+				'.host-card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.15); background: #f0f0f0; transform: translateY(-2px); }',
+				'.host-info { margin-right: 80px; }',
+				'.host-name { font-weight: bold; font-size: 16px; color: #333; margin-bottom: 5px; }',
+				'.host-ip { color: #666; font-size: 14px; margin-bottom: 3px; }',
+				'.host-mac { color: #888; font-size: 12px; font-family: monospace; }',
+				
+				// Common icon styles
 				'.wol-icon { position: absolute; right: 15px; top: 50%; transform: translateY(-50%); font-size: 24px; color: #4CAF50; opacity: 0; transition: opacity 0.3s ease; }',
-				'.lease-card:hover .wol-icon { opacity: 1; }',
-				'.wol-icon:hover { color: #45a049; transform: translateY(-50%) scale(1.1); }'
+				'.lease-card:hover .wol-icon, .host-card:hover .wol-icon, .pinned-card:hover .wol-icon { opacity: 1; }',
+				'.wol-icon:hover { color: #45a049; transform: translateY(-50%) scale(1.1); }',
+				
+				// Pin/Unpin button styles - positioned at card edge for mobile
+				'.pin-btn, .unpin-btn { position: absolute; right: -12px; top: -12px; width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 14px; cursor: pointer; transition: all 0.3s ease; opacity: 1; box-shadow: 0 2px 6px rgba(0,0,0,0.2); z-index: 10; }',
+				'.pin-btn { background: #FFC107; color: #333; border: 2px solid #fff; }',
+				'.pin-btn:hover { background: #FFB300; transform: scale(1.1); box-shadow: 0 4px 8px rgba(0,0,0,0.3); }',
+				'.unpin-btn { background: #2196F3; color: #fff; border: 2px solid #fff; }',
+				'.unpin-btn:hover { background: #1976D2; transform: scale(1.1); box-shadow: 0 4px 8px rgba(0,0,0,0.3); }',
+				
+				// Dark mode styles
+				'@media (prefers-color-scheme: dark) {',
+				'  .pinned-hosts-container h3 { color: #64B5F6; }',
+				'  .static-leases-container h3, .host-hints-container h3 { color: #e0e0e0; }',
+				'  .pinned-card { background: rgba(33,150,243,0.12); border-color: rgba(33,150,243,0.5); }',
+				'  .pinned-card:hover { background: rgba(33,150,243,0.2); }',
+				'  .lease-card { background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.2); }',
+				'  .lease-card:hover { background: rgba(255,255,255,0.1); }',
+				'  .host-card { background: rgba(255,255,255,0.03); border-color: rgba(255,255,255,0.15); }',
+				'  .host-card:hover { background: rgba(255,255,255,0.08); }',
+				'  .lease-name, .host-name { color: #e0e0e0; }',
+				'  .lease-ip, .host-ip { color: #b0b0b0; }',
+				'  .lease-mac, .host-mac { color: #909090; }',
+				'  .pin-btn { background: rgba(255,193,7,0.9); border-color: rgba(255,255,255,0.3); }',
+				'  .unpin-btn { background: rgba(33,150,243,0.9); border-color: rgba(255,255,255,0.3); }',
+				'}',
+				
+				// LuCI dark theme specific overrides
+				'[data-darkmode="true"] .pinned-hosts-container h3 { color: #64B5F6; }',
+				'[data-darkmode="true"] .static-leases-container h3, [data-darkmode="true"] .host-hints-container h3 { color: #e0e0e0; }',
+				'[data-darkmode="true"] .pinned-card { background: rgba(33,150,243,0.12); border-color: rgba(33,150,243,0.5); }',
+				'[data-darkmode="true"] .pinned-card:hover { background: rgba(33,150,243,0.2); }',
+				'[data-darkmode="true"] .lease-card { background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.2); }',
+				'[data-darkmode="true"] .lease-card:hover { background: rgba(255,255,255,0.1); }',
+				'[data-darkmode="true"] .host-card { background: rgba(255,255,255,0.03); border-color: rgba(255,255,255,0.15); }',
+				'[data-darkmode="true"] .host-card:hover { background: rgba(255,255,255,0.08); }',
+				'[data-darkmode="true"] .lease-name, [data-darkmode="true"] .host-name { color: #e0e0e0; }',
+				'[data-darkmode="true"] .lease-ip, [data-darkmode="true"] .host-ip { color: #b0b0b0; }',
+				'[data-darkmode="true"] .lease-mac, [data-darkmode="true"] .host-mac { color: #909090; }',
+				'[data-darkmode="true"] .pin-btn { background: rgba(255,193,7,0.9); border-color: rgba(255,255,255,0.3); }',
+				'[data-darkmode="true"] .unpin-btn { background: rgba(33,150,243,0.9); border-color: rgba(255,255,255,0.3); }'
 			]));
 		}
 
-		// Store staticLeasesContainer for use in addFooter
+		// Store containers for use in addFooter
 		this.staticLeasesContainer = staticLeasesContainer;
+		this.hostHintsContainer = hostHintsContainer;
+		this.pinnedHostsContainer = pinnedHostsContainer;
 		return m.render();
 	},
 
@@ -241,6 +441,87 @@ return view.extend({
 		}
 	},
 
+	handleTogglePin: function(mac, name, ip, isPinned) {
+		// Check if there are pending changes outside of wolh config
+		return uci.changes().then((changes) => {
+			var configNames = Object.keys(changes);
+			var nonWolhChanges = configNames.filter(function(config) {
+				return config !== 'wolh';
+			});
+			var hasWolhChanges = configNames.includes('wolh');
+			
+			if (nonWolhChanges.length > 0) {
+				ui.addNotification(null, [
+					E('p', [ _('Please save your Unsaved Changes first') ])
+				]);
+				return Promise.reject('Other changes pending');
+			}
+			
+			// If there are wolh changes, wait 2 seconds before proceeding
+			var delay = hasWolhChanges ? new Promise(function(resolve) {
+				setTimeout(resolve, 2000);
+			}) : Promise.resolve();
+			
+			return delay.then(function() {
+				// Show loading modal
+				var action = isPinned ? _('Unpinning host') : _('Pinning host');
+				ui.showModal(action, [
+					E('p', { 'class': 'spinning' }, [ _('Saving configuration…') ])
+				]);
+
+				if (isPinned) {
+					// Find and remove the section
+					uci.sections('wolh', 'host', function(section) {
+						if (section.mac === mac) {
+							uci.remove('wolh', section['.name']);
+						}
+					});
+				} else {
+					// Create new section in wolh config
+					var sectionId = uci.add('wolh', 'host');
+					uci.set('wolh', sectionId, 'mac', mac);
+					uci.set('wolh', sectionId, 'name', name);
+					if (ip) {
+						uci.set('wolh', sectionId, 'ip', ip);
+					}
+				}
+				
+				return uci.save()
+					.then(() => uci.apply())
+					.then(() => {
+						var checkChanges = function() {
+							return uci.changes().then((changes) => {
+								var configNames = Object.keys(changes);
+								if (configNames.length === 0) {
+									location.reload();
+								} else {
+									setTimeout(checkChanges, 400);
+								}
+							}).catch(() => {
+								setTimeout(() => location.reload(), 2000);
+							});
+						};
+						setTimeout(checkChanges, 1000);
+					})
+					.catch((err) => {
+						ui.hideModal();
+						var errorMsg = isPinned ? 
+							_('Failed to unpin host: %s').format(err) : 
+							_('Failed to pin host: %s').format(err);
+						ui.addNotification(null, [
+							E('p', [ errorMsg ])
+						]);
+					});
+			});
+		}).catch((err) => {
+			if (err !== 'Other changes pending') {
+				ui.addNotification(null, [
+					E('p', [ _('Failed to check configuration status: %s').format(err) ])
+				]);
+			}
+		});
+	},
+
 	addFooter: function() {
 		var footer = E('div', { 'class': 'cbi-page-actions' }, [
 			E('button', {
@@ -249,12 +530,26 @@ return view.extend({
 			}, [ _('Wake up host') ])
 		]);
 
-		if (this.staticLeasesContainer) {
-			return E('div', {}, [
-				footer,
-				this.staticLeasesContainer
-			]);
+		var containers = [];
+		
+		if (this.pinnedHostsContainer) {
+			containers.push(this.pinnedHostsContainer);
 		}
+		
+		if (this.staticLeasesContainer) {
+			containers.push(this.staticLeasesContainer);
+		}
+		
+		if (this.hostHintsContainer) {
+			containers.push(this.hostHintsContainer);
+		}
+
+		if (containers.length > 0) {
+			return E('div', {}, [
+				footer
+			].concat(containers));
+		}
+		
 		return footer;
 	}
 });

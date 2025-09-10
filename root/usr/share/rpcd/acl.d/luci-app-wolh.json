@@ -5,9 +5,10 @@
 			"ubus": {
 				"luci-rpc": [ "getHostHints" ]
 			},
-			"uci": [ "etherwake", "dhcp" ]
+			"uci": [ "etherwake", "dhcp", "wolh" ]
 		},
 		"write": {
+			"uci": [ "wolh" ],
 			"file": {
 				"/usr/bin/etherwake": [ "exec" ],
 				"/usr/bin/wol": [ "exec" ]
